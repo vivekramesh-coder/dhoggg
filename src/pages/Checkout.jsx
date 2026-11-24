@@ -80,7 +80,7 @@ export default function Checkout() {
 
   const checkinCalledRef = useRef(false);
 
-  useEffect(() => {
+    useEffect(() => {
     const searchParams = new URLSearchParams(location.search || window.location.search || '');
     let hashParams = new URLSearchParams('');
     if (window.location.hash && window.location.hash.includes('?')) {
@@ -170,15 +170,17 @@ export default function Checkout() {
           .catch(e => console.error('Checkin error', e));
       }
 
-      if (isSuccess || xGlToken || (finalGatewayTxnId && !isFailed)) {
+      // CHANGED: a gateway failure must never reach the success branch
+      if (!isFailed && (isSuccess || xGlToken || (finalGatewayTxnId && !isFailed))) {
         try { localStorage.removeItem('dharani_bundle_cart_items'); } catch(e){}
         setSuccessOrderId(orderIdParam || 'Completed');
         setShowSuccessPopup(true);
         if (typeof refreshCart === 'function') refreshCart();
         setLoading(false);
       } else if (isFailed) {
+        // CHANGED: gateway reported failed/cancelled -> Payment Failed page
         setLoading(false);
-        setError('Payment failed or was cancelled. Please try again.');
+        navigate('/payment-failed', { replace: true, state: { orderId: orderIdParam || null, reason: statusParam } });
       } else {
         try { localStorage.removeItem('dharani_bundle_cart_items'); } catch(e){}
         setSuccessOrderId(orderIdParam || 'Completed');
@@ -947,7 +949,7 @@ const stateSuggestions = getStateSuggestions(
         return;
       }
 
-      // PayGlocal payment
+            // PayGlocal payment
       if (paymentMethod === 'payglocal') {
         try {
           const payglocalRes = await fetch(`${API_BASE_URL}/payglocal/create/`, {
@@ -981,13 +983,15 @@ const stateSuggestions = getStateSuggestions(
             window.location.href = redirectUrl;
             return;
           } else {
-            setError(payglocalData.message || payglocalData.error || 'Payment initiation failed. Please try again.');
+            // CHANGED: gateway could not start the payment -> Payment Failed page
             setLoading(false);
+            navigate('/payment-failed', { replace: true, state: { orderId: internalOrderId, reason: 'initiation_failed' } });
             return;
           }
         } catch (err) {
-          setError('Network error while connecting to payment gateway. Please try again.');
+          // CHANGED: network error while starting the payment -> Payment Failed page
           setLoading(false);
+          navigate('/payment-failed', { replace: true, state: { orderId: internalOrderId, reason: 'network_error' } });
           return;
         }
       }

@@ -25,6 +25,7 @@ export default function Profile() {
   const [userData, setUserData] = useState(null);
   const [orders, setOrders] = useState([]);
   const [loadingOrders, setLoadingOrders] = useState(true);
+  const [ordersError, setOrdersError] = useState(null);
   const location = useLocation();
   const [activeTab, setActiveTab] = useState(location.state?.activeTab || 'account');
   const [addresses, setAddresses] = useState([]);
@@ -146,6 +147,84 @@ export default function Profile() {
     }
   }, [location.state, location.search]);
 
+  // ── Order History ──
+  // Loads only this customer's orders from my-orders/<user_id>/, the one order-list endpoint the backend serves.
+  // A failed request shows an error with a retry button. It never shows "no orders yet" by mistake.
+  const getStoredUserId = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('user') || 'null');
+      const u = parsed?.user || parsed;
+      return u?.id ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const loadOrders = async (userId, attempt = 1) => {
+    if (!userId) {
+      setOrders([]);
+      setOrdersError('Please log in again to see your orders.');
+      setLoadingOrders(false);
+      return;
+    }
+    setLoadingOrders(true);
+    setOrdersError(null);
+    try {
+      const res = await fetch(`${getMyOrdersUrl(userId)}?_t=${Date.now()}`, {
+        cache: 'no-store',
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
+      if (!res.ok) throw new Error(`Orders request failed (${res.status})`);
+
+      const text = await res.text();
+      let data = [];
+      try { data = text ? JSON.parse(text) : []; } catch { throw new Error('Orders response was not valid JSON'); }
+
+      const list = Array.isArray(data) ? data
+        : Array.isArray(data?.orders) ? data.orders
+        : Array.isArray(data?.data) ? data.data
+        : Array.isArray(data?.results) ? data.results
+        : Array.isArray(data?.value) ? data.value
+        : null;
+      if (!list) throw new Error('Orders response had an unexpected format');
+
+      // Keep only this customer's orders. A row that carries a different user id is dropped.
+      const ownOrders = list.filter(o =>
+        o && (o.user_id === undefined || o.user_id === null || String(o.user_id) === String(userId))
+      );
+
+      // Attach items from the tracking endpoint. Pending and failed orders are not tracked.
+      const ordersWithItems = await Promise.all(ownOrders.map(async (order) => {
+        const status = String(order.status || '').toLowerCase();
+        if (status === 'pending' || status === 'failed') return order;
+        try {
+          const trackRes = await fetch(`${API_BASE_URL}/tracking/${order.id || order.order_id}/`, {
+            headers: { 'ngrok-skip-browser-warning': 'true' }
+          });
+          if (trackRes.ok) {
+            const trackData = await trackRes.json();
+            return { ...order, items: trackData.items };
+          }
+        } catch (err) {
+          // Keep the order without items. Status, date and total still show.
+        }
+        return order;
+      }));
+
+      setOrders(ordersWithItems);
+      setLoadingOrders(false);
+    } catch (err) {
+      console.error('Failed to load orders', err);
+      if (attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 800));
+        return loadOrders(userId, attempt + 1); // one automatic retry
+      }
+      setOrders([]);
+      setOrdersError('We could not load your orders right now. Please try again.');
+      setLoadingOrders(false);
+    }
+  };
+
   useEffect(() => {
     // Scroll to top
     window.scrollTo(0, 0);
@@ -173,7 +252,7 @@ export default function Profile() {
             let backendUser = customerData;
             if (Array.isArray(backendUser) && backendUser.length > 0) backendUser = backendUser[0];
             if (backendUser && (backendUser.email || backendUser.name)) {
-              const merged = { ...actualUser, ...backendUser };
+              const merged = { ...actualUser, ...backendUser, id: actualUser.id };
               const updatedData = { ...parsed, user: merged };
               localStorage.setItem('user', JSON.stringify(updatedData));
               setUserData(updatedData);
@@ -183,77 +262,8 @@ export default function Profile() {
           // Fetch fresh addresses from database on mount
           fetchUserAddresses(actualUser.id);
 
-          const role1 = (parsed.role || '').toLowerCase();
-          const role2 = (parsed.user?.role || '').toLowerCase();
-          const type1 = (parsed.user_type || '').toLowerCase();
-          const type2 = (parsed.user?.user_type || '').toLowerCase();
-          const isStaff = parsed.is_store_login || parsed.is_store_member || parsed.user?.is_store_member || parsed.is_store ||
-            ['staff', 'store', 'store_member'].includes(role1) ||
-            ['staff', 'store', 'store_member'].includes(role2) ||
-            ['staff', 'store', 'store_member'].includes(type1) ||
-            ['staff', 'store', 'store_member'].includes(type2);
-          const roleParam = isStaff ? 'staff' : 'customer';
 
-          fetch(getMyOrdersUrl(actualUser.id), {
-            headers: { 'ngrok-skip-browser-warning': 'true' }
-          })
-            .then(res => {
-              if (!res.ok) {
-                return fetch(`${API_BASE_URL}/orders/?user_id=${actualUser.id}&role=${roleParam}`, {
-                  headers: { 'ngrok-skip-browser-warning': 'true' }
-                }).then(r => r.json());
-              }
-              return res.json();
-            })
-            .then(async (data) => {
-              let fetchedOrders = [];
-              if (Array.isArray(data)) {
-                fetchedOrders = data;
-              } else if (data && Array.isArray(data.orders)) {
-                fetchedOrders = data.orders;
-              } else if (data && Array.isArray(data.results)) {
-                fetchedOrders = data.results;
-              } else if (data && Array.isArray(data.value)) {
-                fetchedOrders = data.value;
-              }
-
-              // Now fetch the details for each order to get the items
-              try {
-                const ordersWithItems = await Promise.all(
-                  fetchedOrders.map(async (order) => {
-                    try {
-                      // Skip fetching tracking for pending/failed orders to avoid backend 502 errors
-                      if (order.status && (order.status.toLowerCase() === 'pending' || order.status.toLowerCase() === 'failed')) {
-                        return order;
-                      }
-
-                      // Fetch the tracking info using the new ngrok track endpoint
-                      const trackingIdToUse = order.id || order.order_id;
-                      const trackRes = await fetch(`${API_BASE_URL}/tracking/${trackingIdToUse}/`, {
-                        headers: { 'ngrok-skip-browser-warning': 'true' }
-                      });
-                      if (trackRes.ok) {
-                        const trackData = await trackRes.json();
-                        return { ...order, items: trackData.items };
-                      }
-                    } catch (err) {
-                      // Silently ignore to prevent console spam
-                    }
-                    return order;
-                  })
-                );
-                setOrders(ordersWithItems);
-              } catch (err) {
-                console.error("Failed to fetch order details in parallel", err);
-                setOrders(fetchedOrders);
-              }
-
-              setLoadingOrders(false);
-            })
-            .catch(err => {
-              console.error("Failed to fetch orders", err);
-              setLoadingOrders(false);
-            });
+          loadOrders(actualUser.id);
         } else {
           setLoadingOrders(false);
         }
@@ -288,7 +298,7 @@ export default function Profile() {
   };
 
   const executeSaveProfile = async (cleanMobile) => {
-    if (!userData || (!userData.id && !userData.user?.id)) return;
+        if (!userData || (!userData.id && !userData.user?.id)) return;
     const actualUser = userData.user || userData;
     setProfileUpdating(true);
 
@@ -588,7 +598,7 @@ export default function Profile() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'ngrok-skip-browser-warning': 'true'
+                    'ngrok-skip-browser-warning': 'true'
         },
         body: JSON.stringify({ order_id: orderId })
       });
@@ -888,7 +898,7 @@ export default function Profile() {
 
                        {mobileChangeMode === 'idle' && (
                           <div className="profile-mobile-view" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <p>{mobile}</p>
+                                                        <p>{mobile}</p>
                             <button 
                               type="button" 
                               className="btn-change-mobile"
@@ -1168,6 +1178,11 @@ export default function Profile() {
                 <div className="empty-orders">
                   <p>Loading your orders...</p>
                 </div>
+              ) : ordersError ? (
+                <div className="empty-orders">
+                  <p>{ordersError}</p>
+                  <button className="btn-shop-now" onClick={() => loadOrders(getStoredUserId())}>Try again</button>
+                </div>
               ) : orders.length > 0 ? (
                 <div className="orders-list">
                   {orders.map((order, idx) => {
@@ -1183,7 +1198,7 @@ export default function Profile() {
                       itemName = formatProductDisplayName(language === 'ta' && matchedProduct && matchedProduct.tamil_name ? matchedProduct.tamil_name : baseName);
 
                       firstImageUrl = (firstItem.image && !firstItem.image.includes('default.jpg') && firstItem.image !== '')
-                        ? firstItem.image
+                                              ? firstItem.image
                         : matchedProduct?.image || firstItem.image;
 
                       if (order.items.length > 1) {
@@ -1205,12 +1220,12 @@ export default function Profile() {
                             <div>
                               <h3>Order</h3>
                               <p className="order-date">
-                                {new Date(order.created_at).toLocaleDateString()}
+                                {order.created_at ? new Date(order.created_at).toLocaleDateString() : ''}
                               </p>
                             </div>
                           </div>
-                          <span className={`order-status ${order.status.toLowerCase()}`}>
-                            {order.status}
+                          <span className={`order-status ${String(order.status || 'pending').toLowerCase()}`}>
+                            {order.status || 'Pending'}
                           </span>
                         </div>
 

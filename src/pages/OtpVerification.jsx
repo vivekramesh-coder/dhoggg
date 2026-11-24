@@ -94,6 +94,7 @@ export default function OtpVerification() {
       // Log the user in by saving to localStorage
       if (data) {
         localStorage.setItem('user', JSON.stringify(data.user || data));
+        window.dispatchEvent(new Event('user-login-status-changed'));
       }
 
       setSuccessMsg('Verification successful! Redirecting to home...');

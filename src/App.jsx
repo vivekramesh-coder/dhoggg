@@ -59,6 +59,7 @@ const HandpickedDeals = lazy(() => import('./components/HandpickedDeals'));
 const OurJourney = lazy(() => import('./components/OurJourney'));
 import Footer from './components/Footer';
 import OrderSuccess from './pages/OrderSuccess';
+import PaymentFailed from './pages/PaymentFailed';
 const TrustBadges = lazy(() => import('./components/TrustBadges'));
 
 
@@ -491,6 +492,7 @@ function AppContent() {
               <Route path="/cart" element={<Cart />} />
               <Route path="/checkout" element={<Checkout />} />
               <Route path="/order-success" element={<OrderSuccess />} />
+              <Route path="/payment-failed" element={<PaymentFailed />} />
               <Route path="/track/:orderId" element={<OrderTracking />} />
               <Route path="/product/:id" element={<ProductDetails />} />
               <Route path="/about" element={<About />} />
