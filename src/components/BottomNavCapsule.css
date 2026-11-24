@@ -133,4 +133,21 @@
     border: 1.5px solid #15803d !important;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2) !important;
   }
+
+    /* Closed state: push sheet fully below screen AND hide it completely */
+  .categories-drawer-sheet {
+    transform: translateY(calc(100% + 60px + env(safe-area-inset-bottom, 0px))) !important;
+    box-shadow: none !important;
+  }
+
+  /* Hide whole drawer root (backdrop + sheet) when closed */
+  .categories-drawer-root:not(.is-open) {
+    visibility: hidden !important;
+    transition: visibility 0s linear 0.34s !important;
+  }
+
+  .categories-drawer-root.is-open {
+    visibility: visible !important;
+    transition: none !important;
+  }
 }
